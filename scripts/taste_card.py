@@ -27,9 +27,8 @@ if sys.version_info < (3, 10):
 import argparse
 import json
 import textwrap
-from pathlib import Path
 
-from _common import load_profile
+from _common import load_profile, write_private
 
 # ── Archetype Detection ──────────────────────────────────────────
 
@@ -697,13 +696,12 @@ def main():
             result = generate_drift_svg(drift_data)
         else:
             result = generate_drift_text(drift_data)
+    else:  # argparse's `choices` makes this unreachable; it keeps `result` provably assigned
+        print(f"ERROR: unknown mode '{args.mode}'.", file=sys.stderr)
+        sys.exit(1)
 
     if args.output:
-        import os as _os
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        fd = _os.open(str(args.output), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
-        with _os.fdopen(fd, "w") as f:
-            f.write(result)
+        write_private(args.output, result)
         print(f"✅ Card written to {args.output}", file=sys.stderr)
     else:
         print(result)
