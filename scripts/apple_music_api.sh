@@ -3,7 +3,17 @@
 # Every endpoint referenced in SKILL.md is implemented here.
 set -euo pipefail
 
+# Testing hook: APPLE_MUSIC_API_BASE may point at a local mock server (tests/mock_api.py).
+# Only loopback addresses are accepted so real tokens can never be sent to another host.
 BASE="https://api.music.apple.com"
+if [[ -n "${APPLE_MUSIC_API_BASE:-}" ]]; then
+  if [[ "$APPLE_MUSIC_API_BASE" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?$ ]]; then
+    BASE="$APPLE_MUSIC_API_BASE"
+  else
+    echo "ERROR: APPLE_MUSIC_API_BASE must be http://127.0.0.1[:port] or http://localhost[:port]" >&2
+    exit 1
+  fi
+fi
 
 # ── Token check ───────────────────────────────────────────────────
 require_dev_token() {
@@ -18,6 +28,29 @@ require_user_token() {
   fi
 }
 
+# ── Temp-file hygiene ─────────────────────────────────────────────
+# No RETURN traps: bash 4+/5 keeps them armed after the function that set them
+# returns, so they fire again in the caller where the function's locals no longer
+# exist (an unbound-variable error under `set -u`) — and one helper's trap silently
+# replaced another's, leaving the token-bearing curl config behind. Instead every
+# helper removes its own temp files right after use; this registry plus the EXIT /
+# INT / TERM traps are only the backstop for interrupts. Read commands run as
+# `_get | jq` in a subshell, where bash resets traps, so _with_auth re-installs them.
+_TMPFILES=()
+_cleanup() {
+  local f
+  for f in "${_TMPFILES[@]:-}"; do
+    [[ -n "$f" ]] && rm -f "$f"
+  done
+  return 0
+}
+_install_traps() {
+  trap _cleanup EXIT
+  trap '_cleanup; exit 130' INT
+  trap '_cleanup; exit 143' TERM
+}
+_install_traps
+
 # ── HTTP helpers ──────────────────────────────────────────────────
 _retry() {
   # Retry a curl command with exponential backoff on 429 responses.
@@ -25,18 +58,19 @@ _retry() {
   local max_retries=3
   local delay=1
   local attempt=0
+  local rc=0
   local tmpfile=""
   tmpfile=$(mktemp "${TMPDIR:-/tmp}/am_api_XXXXXX")
-  # Only use RETURN trap — EXIT persists globally and outlives the local var
-  trap 'rm -f "$tmpfile"' RETURN
+  _TMPFILES+=("$tmpfile")
 
   while (( attempt <= max_retries )); do
     local http_code
     local curl_exit=0
-    http_code=$(curl -sS -o "$tmpfile" -w '%{http_code}' "$@") || curl_exit=$?
+    http_code=$(curl -sS -g -o "$tmpfile" -w '%{http_code}' "$@") || curl_exit=$?
     if [[ $curl_exit -ne 0 && "$http_code" != "429" ]]; then
       echo "ERROR: curl failed (exit $curl_exit). Check network connectivity." >&2
-      return 1
+      rc=1
+      break
     fi
     if [[ "$http_code" == "429" && attempt -lt max_retries ]]; then
       (( attempt++ ))
@@ -45,12 +79,12 @@ _retry() {
       (( delay *= 2 ))
     else
       cat "$tmpfile"
-      if [[ "$http_code" =~ ^[45] ]]; then
-        return 1
-      fi
-      return 0
+      [[ "$http_code" =~ ^[45] ]] && rc=1
+      break
     fi
   done
+  rm -f "$tmpfile"
+  return "$rc"
 }
 
 _make_auth_config() {
@@ -66,65 +100,67 @@ _make_auth_config() {
   echo "$cfgfile"
 }
 
+_with_auth() {
+  # Usage: _with_auth <dev|both> <curl args...>
+  # Runs _retry with a temporary auth config that is always removed afterwards.
+  local mode="$1"; shift
+  local cfg rc=0
+  _install_traps
+  if [[ "$mode" == "both" ]]; then
+    cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN" "$APPLE_MUSIC_USER_TOKEN")
+  else
+    cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN")
+  fi
+  _TMPFILES+=("$cfg")
+  _retry -K "$cfg" "$@" || rc=$?
+  rm -f "$cfg"
+  return "$rc"
+}
+
 _get() {
   # Personalized request (both tokens)
   require_user_token
-  local _cfg
-  _cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN" "$APPLE_MUSIC_USER_TOKEN")
-  trap 'rm -f "$_cfg"' RETURN INT TERM
-  _retry -K "$_cfg" "${BASE}${1}"
+  _with_auth both "${BASE}${1}"
 }
 
 _get_catalog() {
   # Catalog-only request (dev token only)
   require_dev_token
-  local _cfg
-  _cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN")
-  trap 'rm -f "$_cfg"' RETURN INT TERM
-  _retry -K "$_cfg" "${BASE}${1}"
+  _with_auth dev "${BASE}${1}"
 }
 
 _post() {
   require_user_token
-  local _cfg
-  _cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN" "$APPLE_MUSIC_USER_TOKEN")
-  trap 'rm -f "$_cfg"' RETURN INT TERM
-  _retry -X POST -K "$_cfg" \
-    -H "Content-Type: application/json" \
-    -d "${2}" \
-    "${BASE}${1}"
+  _with_auth both -X POST -H "Content-Type: application/json" -d "${2}" "${BASE}${1}"
 }
 
 _post_file() {
   require_user_token
-  local _cfg
-  _cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN" "$APPLE_MUSIC_USER_TOKEN")
-  trap 'rm -f "$_cfg"' RETURN INT TERM
-  _retry -X POST -K "$_cfg" \
-    -H "Content-Type: application/json" \
-    -d @"${2}" \
-    "${BASE}${1}"
+  _with_auth both -X POST -H "Content-Type: application/json" -d @"${2}" "${BASE}${1}"
+}
+
+_post_empty() {
+  # POST with no body (both tokens)
+  require_user_token
+  _with_auth both -X POST "${BASE}${1}"
+}
+
+_put_file() {
+  # PUT with a JSON body file (both tokens)
+  require_user_token
+  _with_auth both -X PUT -H "Content-Type: application/json" -d @"${2}" "${BASE}${1}"
 }
 
 _delete() {
   # DELETE request with JSON body (both tokens)
   require_user_token
-  local _cfg
-  _cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN" "$APPLE_MUSIC_USER_TOKEN")
-  trap 'rm -f "$_cfg"' RETURN INT TERM
-  _retry -X DELETE -K "$_cfg" \
-    -H "Content-Type: application/json" \
-    -d @"${2}" \
-    "${BASE}${1}"
+  _with_auth both -X DELETE -H "Content-Type: application/json" -d @"${2}" "${BASE}${1}"
 }
 
 _delete_no_body() {
   # DELETE request without body (both tokens)
   require_user_token
-  local _cfg
-  _cfg=$(_make_auth_config "$APPLE_MUSIC_DEV_TOKEN" "$APPLE_MUSIC_USER_TOKEN")
-  trap 'rm -f "$_cfg"' RETURN INT TERM
-  _retry -X DELETE -K "$_cfg" "${BASE}${1}"
+  _with_auth both -X DELETE "${BASE}${1}"
 }
 
 _urlencode() {
@@ -350,6 +386,75 @@ cmd_remove_from_playlist() {
   echo "✅ Tracks removed." >&2
 }
 
+_validate_ids() {
+  # Catalog/library IDs: letters, digits, dots and underscores, comma-separated
+  [[ "$1" =~ ^[A-Za-z0-9._]+(,[A-Za-z0-9._]+)*$ ]] || { echo "ERROR: invalid ID list: $1" >&2; return 1; }
+}
+
+cmd_similar_artists() {
+  local sf="${1:?Usage: similar-artists <storefront> <artist_id>}"
+  local id="${2:?Usage: similar-artists <storefront> <artist_id>}"
+  [[ "$sf" =~ ^[a-z]{2}$ ]] || { echo "ERROR: Invalid storefront code: $sf" >&2; return 1; }
+  _validate_ids "$id" || return 1
+  _get_catalog "/v1/catalog/${sf}/artists/${id}/view/similar-artists?limit=20" | jq .
+}
+
+cmd_add_to_library() {
+  local type="${1:?Usage: add-to-library <albums|songs> <id,id,...>}"
+  local ids="${2:?Usage: add-to-library <albums|songs> <id,id,...>}"
+  [[ "$type" == "albums" || "$type" == "songs" ]] || { echo "ERROR: type must be albums or songs" >&2; return 1; }
+  _validate_ids "$ids" || return 1
+  _post_empty "/v1/me/library?ids[${type}]=${ids}"
+  echo "✅ Added ${type} to library." >&2
+}
+
+cmd_recently_added() {
+  local limit="${1:-25}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || { echo "ERROR: limit must be a number" >&2; return 1; }
+  _get "/v1/me/library/recently-added?limit=${limit}" | jq .
+}
+
+cmd_recent_stations() {
+  _get "/v1/me/recent/radio-stations?limit=10" | jq .
+}
+
+cmd_songs_by_isrc() {
+  local sf="${1:?Usage: songs-by-isrc <storefront> <isrc,isrc,...>}"
+  local isrcs="${2:?Usage: songs-by-isrc <storefront> <isrc,isrc,...>}"
+  [[ "$sf" =~ ^[a-z]{2}$ ]] || { echo "ERROR: Invalid storefront code: $sf" >&2; return 1; }
+  [[ "$isrcs" =~ ^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}(,[A-Z]{2}[A-Z0-9]{3}[0-9]{7}){0,24}$ ]] \
+    || { echo "ERROR: expected 1-25 comma-separated ISRCs" >&2; return 1; }
+  _get_catalog "/v1/catalog/${sf}/songs?filter[isrc]=${isrcs}" | jq .
+}
+
+cmd_favorite() {
+  local type="${1:?Usage: favorite <songs|albums|artists|playlists> <id,id,...>}"
+  local ids="${2:?Usage: favorite <songs|albums|artists|playlists> <id,id,...>}"
+  [[ "$type" =~ ^(songs|albums|artists|playlists)$ ]] || { echo "ERROR: invalid type: $type" >&2; return 1; }
+  _validate_ids "$ids" || return 1
+  _post_empty "/v1/me/favorites?ids[${type}]=${ids}"
+  echo "✅ Added ${type} to favorites." >&2
+}
+
+cmd_rate() {
+  local id="${1:?Usage: rate <song_id> <1|-1>}"
+  local value="${2:?Usage: rate <song_id> <1|-1>}"
+  [[ "$value" == "1" || "$value" == "-1" ]] || { echo "ERROR: value must be 1 or -1" >&2; return 1; }
+  _validate_ids "$id" || return 1
+  local tmpfile rc=0
+  tmpfile=$(mktemp "${TMPDIR:-/tmp}/am_rate_XXXXXX")
+  printf '{"type":"rating","attributes":{"value":%s}}' "$value" > "$tmpfile"
+  _put_file "/v1/me/ratings/songs/${id}" "$tmpfile" || rc=$?
+  rm -f "$tmpfile"
+  return "$rc"
+}
+
+cmd_unrate() {
+  local id="${1:?Usage: unrate <song_id>}"
+  _validate_ids "$id" || return 1
+  _delete_no_body "/v1/me/ratings/songs/${id}"
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────
 cmd="${1:-help}"; shift 2>/dev/null || true
 
@@ -378,6 +483,14 @@ case "$cmd" in
   create-playlist)   cmd_create_playlist "$@" ;;
   add-to-playlist)   cmd_add_to_playlist "$@" ;;
   remove-from-playlist) cmd_remove_from_playlist "$@" ;;
+  similar-artists)   cmd_similar_artists "$@" ;;
+  add-to-library)    cmd_add_to_library "$@" ;;
+  recently-added)    cmd_recently_added "$@" ;;
+  recent-stations)   cmd_recent_stations ;;
+  songs-by-isrc)     cmd_songs_by_isrc "$@" ;;
+  favorite)          cmd_favorite "$@" ;;
+  rate)              cmd_rate "$@" ;;
+  unrate)            cmd_unrate "$@" ;;
   help|*)
     cat <<'EOF'
 Apple Music DJ — API Wrapper
@@ -401,6 +514,12 @@ Personalized (require both tokens):
   create-playlist <json_file>         Create playlist from JSON spec
   add-to-playlist <id> <json_file>    Add tracks to existing playlist
   remove-from-playlist <id> <json>    Remove tracks from playlist
+  recently-added [limit]              Recently added library items
+  recent-stations                     Recently played radio stations
+  add-to-library <type> <ids>         Add albums|songs to library (writes!)
+  favorite <type> <ids>               Add resources to favorites (writes!)
+  rate <song_id> <1|-1>               Love/dislike a song (writes!)
+  unrate <song_id>                    Remove a song rating (writes!)
 
 Catalog (require dev token only):
   search <storefront> <query> [types] Search catalog
@@ -411,6 +530,8 @@ Catalog (require dev token only):
   album-tracks <storefront> <id>      Album with track listing
   song-detail <storefront> <id>       Song with artist & album info
   genres <storefront>                  List all genre categories
+  similar-artists <storefront> <id>   Artists similar to an artist
+  songs-by-isrc <storefront> <isrcs>  Look up songs by ISRC (max 25)
 EOF
     ;;
 esac

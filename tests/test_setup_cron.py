@@ -13,7 +13,7 @@ import setup_cron as sc
 class TestBuildJobDefs:
     def test_returns_all_four_jobs(self):
         defs = sc.build_job_defs("/usr/bin/python3", "/path/profile.json", "us", "/tmp/logs")
-        assert set(defs.keys()) == {"weekly-mix", "new-releases", "daily-drop", "health-check"}
+        assert set(defs.keys()) == {"weekly-mix", "new-releases", "daily-drop", "health-check", "monthly-drift"}
 
     def test_each_job_has_required_keys(self):
         defs = sc.build_job_defs("/usr/bin/python3", "/path/profile.json", "us", "/tmp/logs")
@@ -251,3 +251,54 @@ class TestMain:
         sc.main()
         captured = capsys.readouterr()
         assert "No matching" in captured.out
+
+
+class TestCommandQuoting:
+    def _all(self, python="/usr/bin/python3", profile="/p/profile.json", sf="us"):
+        return sc.build_job_defs(python, profile, sf, "/tmp/logs")
+
+    def test_plain_values_are_unchanged(self):
+        defs = self._all()
+        assert "/usr/bin/python3" in defs["weekly-mix"]["command"]
+        assert "--profile /p/profile.json " in defs["weekly-mix"]["command"]
+
+    def test_paths_with_spaces_stay_one_argument(self):
+        import shlex
+        defs = self._all(python="/my python/bin/python3", profile="/Users/Jane Doe/.apple-music-dj/profile.json")
+        for name, job in defs.items():
+            inner = job["command"].strip("()")
+            for chunk in inner.split("&&"):
+                argv = shlex.split(chunk)
+                assert "/Users/Jane Doe/.apple-music-dj/profile.json" in argv or name == "new-releases", name
+                assert argv[0] in ("/my python/bin/python3", "bash"), (name, argv[0])
+
+    def test_shell_metacharacters_are_not_interpreted(self):
+        import shlex
+        evil = "/tmp/x; touch /tmp/pwned #"
+        for job in self._all(profile=evil).values():
+            for chunk in job["command"].strip("()").split(" && "):
+                assert "; touch /tmp/pwned #" not in [t for t in shlex.split(chunk) if t != evil]
+
+    def test_drift_job_quotes_both_commands(self):
+        job = self._all(profile="/a b/profile.json")["monthly-drift"]
+        assert job["command"].count("'/a b/profile.json'") == 2
+
+
+class TestMonthlyDrift:
+    def test_is_optional_and_logs_both_commands(self):
+        defs = sc.build_job_defs("/usr/bin/python3", "/p/profile.json", "us", "/tmp/logs")
+        job = defs["monthly-drift"]
+        assert job["optional"] is True
+        assert "taste_profiler.py" in job["command"] and "taste_drift.py" in job["command"]
+        line = sc.format_cron_line(job, "monthly-drift")
+        # Subshell so the log redirect covers both commands
+        assert line.split(" ", 5)[5].startswith("(") and ") >> " in line
+
+    def test_other_jobs_not_optional(self):
+        defs = sc.build_job_defs("/usr/bin/python3", "/p.json", "us", "/tmp")
+        assert [n for n, j in defs.items() if j.get("optional")] == ["monthly-drift"]
+
+    def test_list_marks_opt_in(self, monkeypatch, capsys):
+        monkeypatch.setattr(sc, "get_installed_jobs", lambda: [])
+        sc.cmd_list(sc.build_job_defs("/usr/bin/python3", "/p.json", "us", "/tmp"))
+        assert "opt-in" in capsys.readouterr().out
