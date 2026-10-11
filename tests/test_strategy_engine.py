@@ -878,6 +878,14 @@ class TestMoodMap:
 # ── check_playlist_exists ────────────────────────────────────────
 
 class TestCheckPlaylistExists:
+    def test_lookup_failure_warns_instead_of_failing_silently(self, monkeypatch, capsys):
+        def boom(*a, **kw):
+            raise OSError("api script missing")
+        monkeypatch.setattr("subprocess.run", boom)
+        assert se.check_playlist_exists("My Mix") is None
+        err = capsys.readouterr().err
+        assert "Couldn't check for an existing playlist named 'My Mix'" in err and "api script missing" in err
+
     def test_finds_existing_playlist(self, monkeypatch):
         data = json.dumps({"data": [
             {"id": "pl1", "attributes": {"name": "My Mix"}},
@@ -902,6 +910,24 @@ class TestCheckPlaylistExists:
             returncode=1, stdout=""
         ))
         assert se.check_playlist_exists("Any") is None
+
+    def test_nonzero_exit_is_warned_about_with_its_status_and_stderr(self, monkeypatch, capsys):
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(
+            returncode=1, stdout="", stderr="WARN: Rate limited\nERROR: curl failed (exit 6)"))
+        assert se.check_playlist_exists("My Mix") is None
+        err = capsys.readouterr().err
+        assert "named 'My Mix'" in err and "exited 1" in err and "curl failed (exit 6)" in err
+
+    def test_nonzero_exit_without_stderr_still_warns(self, monkeypatch, capsys):
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=2, stdout="", stderr=""))
+        se.check_playlist_exists("X")
+        assert "exited 2." in capsys.readouterr().err
+
+    def test_success_with_no_match_stays_quiet(self, monkeypatch, capsys):
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(
+            returncode=0, stdout=json.dumps({"data": [{"id": "p1", "attributes": {"name": "Other"}}]}), stderr=""))
+        assert se.check_playlist_exists("My Mix") is None
+        assert capsys.readouterr().err == ""
 
     def test_returns_none_on_exception(self, monkeypatch):
         monkeypatch.setattr("subprocess.run", MagicMock(side_effect=Exception("fail")))
