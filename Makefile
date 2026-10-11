@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: test coverage coverage-html lint ruff
+.PHONY: test coverage coverage-html lint ruff actionlint ci audit demo-svg
 
 ## Run all tests
 test:
@@ -20,8 +20,24 @@ ruff:
 	$(PYTHON) -m ruff check scripts tests .github/scripts
 	shellcheck scripts/*.sh
 
+## Lint the GitHub Actions workflows (same check as CI's actionlint job)
+actionlint:
+	actionlint
+
+## Everything CI checks, in one command: ruff + ShellCheck, tests with the coverage floor, workflows
+ci: ruff coverage actionlint
+	@echo "CI checks passed"
+
 ## Syntax-check all scripts
 lint:
 	@for f in scripts/*.py; do $(PYTHON) -c "import py_compile; py_compile.compile('$$f', doraise=True)"; done
 	@for f in scripts/*.sh; do bash -n "$$f"; done
 	@echo "All scripts OK"
+
+## Pre-publish self-audit: trust checks, shipped changes since the last tag, and a review prompt
+audit:
+	$(PYTHON) .github/scripts/self_audit.py
+
+## Regenerate the README's animated demo (assets/demo-tour.svg) from the real `demo.py tour`
+demo-svg:
+	$(PYTHON) .github/scripts/make_demo_svg.py
