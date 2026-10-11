@@ -18,7 +18,7 @@ description: >
   song", "what should I listen to right now", "blend", "throwback", "[decade] playlist", "taste
   drift", "how has my taste changed", "import my playlist", "I didn't like track", "add the
   missing albums", or OpenClaw in the context of music.
-version: 3.2.4
+version: 3.2.5
 emoji: 🎧
 author: Andernet (Matthew Anderson) <and3rn3t@icloud.com>
 homepage: https://github.com/and3rn3t/apple-music-dj
@@ -320,7 +320,7 @@ Show the user the exact / fuzzy / unmatched counts and list the unmatched ones.
 **Triggers:** "I didn't like track 7", "thumbs down that song", "I loved track 3", "never play that again"
 Rates the song in Apple Music and updates the cached profile so later playlists skip it
 immediately: `python3 scripts/feedback.py dislike --playlist-name "<name>" --position 7 --profile <profile.json>`
-(or pass song IDs; `like` and `clear` also exist). Positions are 1-based within playlists the DJ
+(or pass song IDs; `like` and `clear` also exist). Without `--yes` it only previews; add `--yes` once the user has confirmed. Positions are 1-based within playlists the DJ
 created; omit `--playlist-name` for the most recent one. **This writes a rating to the user's account**,
 so only do it on the user's explicit say-so, and name the song and the rating you are about to write
 when it isn't obvious which track they mean.
@@ -410,11 +410,14 @@ Run: `scripts/new_releases.sh <profile.json> <storefront> [--create-playlist]`
 ## Cron / Automated Playlists
 
 OpenClaw has first-class cron and heartbeat support. This skill can automate the jobs below.
-Unlike interactive requests, **a scheduled job runs unattended and writes on its own** (the weekly
-mix creates its playlist without asking each time). Installing the job is the user's approval,
-which is why `setup_cron.py install` needs a reviewed `--confirm` digest — say so when setting one up.
+Unlike interactive requests, **a scheduled job runs unattended and writes on its own** if it is a
+writing job. By default `setup_cron.py install` only schedules the report-only jobs (new releases,
+daily drop, health check). The **weekly mix creates a playlist in the library without asking**, so it is opt-in: it is installed only when named
+(`--jobs weekly-mix`). Installing any job is the user's approval, which is why `install` needs a
+reviewed `--confirm` digest — say so when setting one up, and tell the user plainly that the weekly
+mix will create playlists without asking each time.
 
-**Weekly Mix** (recommended default):
+**Weekly Mix** (opt-in — install with `setup_cron.py install --jobs weekly-mix`):
 ```
 Schedule: Every Sunday at 9:00 AM (user's local time)
 Task:
@@ -558,6 +561,14 @@ stores, and transmits.
 | Recent radio stations | `/v1/me/recent/radio-stations` | Light genre signal from station titles |
 | Storefront | `/v1/me/storefront` | Region detection |
 
+**Requirements.** Needed: `APPLE_MUSIC_DEV_TOKEN`, `APPLE_MUSIC_USER_TOKEN`, `curl`, `jq`, `python3`
+(3.10+). Optional, each used by one feature only: `APPLE_MUSIC_STOREFRONT` (override region
+detection); `crontab` (scheduling); and for generating a developer token yourself with
+`generate_dev_token.py`, `APPLE_KEY_ID`, `APPLE_TEAM_ID`, `APPLE_PRIVATE_KEY_PATH` (your MusicKit
+`.p8` signing key, read only by that script and never sent anywhere) plus the `PyJWT` and
+`cryptography` packages. **License:** MIT (see `LICENSE`); ClawHub distributes published skills
+under MIT-0.
+
 **Data written to the user's account (only on request — always confirm first):**
 
 | Action | Endpoint | Triggered by |
@@ -598,7 +609,7 @@ stores, and transmits.
 | `scripts/_common.py` | Python | Shared utilities (API calls, profile loading, search) |
 | `scripts/apple_music_api.sh` | Bash | API wrapper — all endpoints, retry logic |
 | `scripts/taste_profiler.py` | Python | Taste DNA profiler with caching |
-| `scripts/build_playlist.sh` | Bash | Playlist creation & refresh (create or add tracks) |
+| `scripts/build_playlist.sh` | Bash | Playlist creation & refresh (create or add tracks); previews unless `--yes` is the last argument |
 | `scripts/generate_dev_token.py` | Python | Developer JWT generator |
 | `scripts/taste_card.py` | Python | Shareable Taste DNA Card (SVG/text) |
 | `scripts/compatibility.py` | Python | Taste compatibility scoring (artist or profile) |
