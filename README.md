@@ -44,7 +44,7 @@ Built as an [OpenClaw](https://openclaw.ai) skill, on [ClawHub](https://clawhub.
 | **Apple Developer Account** | [$99/year](https://developer.apple.com/programs/) — needed for MusicKit API access (not for the demo) |
 | **Apple Music subscription** | Active subscription on your Apple ID (not for the demo) |
 | **Python** | 3.10+ (no pip packages needed for core features; `PyJWT` + `cryptography` only to sign a developer token) |
-| **OpenClaw** | [openclaw.ai](https://openclaw.ai) · [docs](https://docs.openclaw.ai) |
+| **Skill host** | [OpenClaw](https://openclaw.ai) ([docs](https://docs.openclaw.ai)) or [Claude Code](#use-with-claude-code) |
 | **CLI tools** | `curl`, `jq` (usually pre-installed on macOS) |
 
 ## 🚀 Quick Install
@@ -60,6 +60,18 @@ git clone https://github.com/and3rn3t/apple-music-dj.git ~/.openclaw/workspace/s
 Start a new OpenClaw session afterwards so the skill loads. It loads even before you've set up
 any tokens, so you can ask it for the demo first; anything that reads your own music asks for the
 tokens when it needs them.
+
+### Use with Claude Code
+
+It's a standard Agent Skill, so Claude Code can load it too:
+
+```bash
+git clone https://github.com/and3rn3t/apple-music-dj.git ~/.claude/skills/apple-music-dj
+```
+
+Start a new Claude Code session and ask *"Show me what the Apple Music DJ can do."* For your own
+music, put the two token `export` lines from [setup](#1-get-your-tokens-one-command) in your shell
+profile so the scripts can read them.
 
 ## 🧪 Try it first (no account needed)
 

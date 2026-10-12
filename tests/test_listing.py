@@ -70,6 +70,13 @@ def test_description_keeps_every_trigger_phrase_agents_rely_on():
         assert phrase in normalized, f"trigger phrase dropped from the description: {phrase!r}"
 
 
+def test_description_fits_the_agent_skills_limit():
+    """The Agent Skills spec caps `description` at 1024 characters; Claude-side validators and the
+    community skill lists reject anything longer. The `>` scalar keeps one trailing newline that
+    `description()` drops, so count it."""
+    assert len(description()) + 1 <= 1024
+
+
 def test_tags_cover_the_main_topics():
     tags = set(re.findall(r"^\s+-\s+(\S+)$", frontmatter().split("tags:", 1)[1].split("category:", 1)[0], re.M))
     assert {"music", "apple-music", "playlists", "musickit", "discovery", "taste-profile"} <= tags
